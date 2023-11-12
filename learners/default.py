@@ -1,11 +1,14 @@
 from __future__ import print_function
 import torch
+import os
 import torch.nn as nn
 from torch.nn import functional as F
 import models
 from utils.metric import accuracy, AverageMeter, Timer
 import copy
 import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
 
 class NormalNN(nn.Module):
     """
@@ -71,6 +74,43 @@ class NormalNN(nn.Module):
     ##########################################
     #           MODEL TRAINING               #
     ##########################################
+    def visualize_confusion_matrix(self, val_loader,file_path,task_num):
+        #plot the confusion matrix
+        cm=self.validation(val_loader,confusion_mat=True)
+        if cm.shape[0]<self.config['num_classes']:
+            cm1 = np.pad(cm, ((0,self.config['num_classes']-cm.shape[0]),(0,self.config['num_classes']-cm.shape[1])), 'constant', constant_values=0)
+        else:
+            cm1=cm
+        
+        np.save(os.path.join(file_path,'{}task_confusion_matrix.npy'.format(task_num)), cm1)
+        plt.figure()
+        plt.matshow(cm1, cmap='viridis')
+        #plt.colorbar()
+        plt.savefig(os.path.join(file_path,'{}task_confusion_mat.pdf'.format(task_num)),bbox_inches='tight')
+        plt.close()
+
+    def visualize_weight(self,file_path,task_num):
+        #plot the L1-weight norm per each task 
+        class_norm=[]
+        if len(self.config['gpuid'])>1:
+            weight=self.model.module.last.weight
+            bias=self.model.module.last.bias.unsqueeze(-1)
+        else:
+            weight=self.model.last.weight
+            bias=self.model.last.bias.unsqueeze(-1)
+        weight=torch.cat((weight,bias),dim=1)
+        for i in range(self.valid_out_dim):
+            class_norm.append(torch.norm(weight[i]).item())
+
+        plt.figure()
+        classes=np.arange(self.valid_out_dim)
+        plt.scatter(classes,class_norm)
+        plt.xlabel('Class Index')
+        plt.ylabel('Weight Norm')
+        plt.xlim(0,weight.shape[0])
+        plt.savefig(os.path.join(file_path,'{}task_class_norm.pdf'.format(task_num)),bbox_inches='tight')
+        np.savetxt(os.path.join(file_path,'{}task_class_norm.csv'.format(task_num)), class_norm, delimiter=",", fmt='%.2f')
+        plt.close()
 
     def learn_batch(self, train_loader, train_dataset, model_save_dir, val_loader=None):
         
@@ -191,7 +231,7 @@ class NormalNN(nn.Module):
         self.optimizer.step()
         return total_loss.detach(), logits
 
-    def validation(self, dataloader, model=None, task_in = None,  verbal = True):
+    def validation(self, dataloader, model=None, task_in = None,  verbal = True, confusion_mat=False):
 
         if model is None:
             model = self.model
@@ -200,6 +240,8 @@ class NormalNN(nn.Module):
         batch_timer = Timer()
         acc = AverageMeter()
         batch_timer.tic()
+        y_true=[]
+        y_pred=[]
 
         orig_mode = model.training
         model.eval()
@@ -224,8 +266,16 @@ class NormalNN(nn.Module):
                 if len(target) > 1:
                     output = model.forward(input)[:, task_in]
                     acc = accumulate_acc(output, target-task_in[0], task, acc, topk=(self.top_k,))
-            
+            if confusion_mat:
+                y_true.append(target.detach().cpu())
+                y_pred.append(output.argmax(dim=1).detach().cpu())
         model.train(orig_mode)
+
+        if confusion_mat:
+            y_true=torch.cat(y_true, dim=0)
+            y_pred=torch.cat(y_pred, dim=0)
+            cm = confusion_matrix(y_true, y_pred)
+            return cm
 
         if verbal:
             self.log(' * Val Acc {acc.avg:.3f}, Total time {time:.2f}'

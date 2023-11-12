@@ -42,15 +42,23 @@ class Trainer:
             Dataset = dataloaders.iCIFAR100
             num_classes = 100
             self.dataset_size = [32,32,3]
+            args.dataroot=os.path.join(args.dataroot, 'cifar100')
         elif args.dataset == 'ImageNet':
             Dataset = dataloaders.iIMAGENET
             num_classes = 1000
             self.dataset_size = [224,224,3]
             self.top_k = 5
+            args.dataroot=os.path.join(args.dataroot, 'imagenet')
         elif args.dataset == 'TinyImageNet':
             Dataset = dataloaders.iTinyIMNET
             num_classes = 200
             self.dataset_size = [64,64,3]
+            args.dataroot=os.path.join(args.dataroot, 'tiny-imagenet')
+        elif args.dataset == 'TinyImageNet100':
+            Dataset = dataloaders.iTinyIMNET
+            num_classes = 100
+            self.dataset_size = [64,64,3]
+            args.dataroot=os.path.join(args.dataroot, 'tiny-imagenet')
         else:
             raise ValueError('Dataset not implemented!')
 
@@ -128,6 +136,12 @@ class Trainer:
                         'deep_inv_params': args.deep_inv_params,
                         'tasks': self.tasks_logits,
                         'top_k': self.top_k,
+                        'sp_mu': args.sp_mu,
+                        'weq_mu': args.weq_mu,
+                        'ce_mu': args.ce_mu,
+                        'rkd_mu': args.rkd_mu,
+                        'finetuning_epochs': args.finetuning_epochs,
+                        'finetuning_lr': args.finetuning_lr,
                         }
         self.learner_type, self.learner_name = args.learner_type, args.learner_name
         self.learner = learners.__dict__[self.learner_type].__dict__[self.learner_name](self.learner_config)
@@ -153,6 +167,12 @@ class Trainer:
         for mkey in self.metric_keys: temp_table[mkey] = []
         temp_dir = self.log_dir + '/temp/'
         if not os.path.exists(temp_dir): os.makedirs(temp_dir)
+
+        # visualize
+        visualize_path= os.path.join(self.log_dir,'visualize_weight')
+        if not os.path.exists(visualize_path): os.makedirs(visualize_path)
+        visualize_cm_path=os.path.join(self.log_dir,'visualize_confusion_matrix')
+        if not os.path.exists(visualize_cm_path): os.makedirs(visualize_cm_path)
 
         # for each task
         for i in range(self.max_task):
@@ -204,6 +224,8 @@ class Trainer:
 
             # save model
             self.learner.save_model(model_save_dir)
+            self.learner.visualize_weight(visualize_path, self.current_t_index)
+            self.learner.visualize_confusion_matrix(test_loader,visualize_cm_path, self.current_t_index)
             
             # evaluate acc
             acc_table = []

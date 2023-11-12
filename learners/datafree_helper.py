@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import math
+from tqdm import tqdm
 
 """
 Some content adapted from the following:
@@ -121,7 +122,7 @@ class Teacher(nn.Module):
         torch.cuda.empty_cache()
 
         self.generator.train()
-        for epoch in range(epochs):
+        for epoch in tqdm(range(epochs)):
 
             # sample from generator
             inputs = self.generator.sample(bs)

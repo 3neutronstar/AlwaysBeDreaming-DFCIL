@@ -27,7 +27,7 @@ def create_args():
     parser.add_argument('--gen_model_name', type=str, default='MLP', help="The name of actual model for the generator")
     parser.add_argument('--learner_type', type=str, default='default', help="The type (filename) of learner")
     parser.add_argument('--learner_name', type=str, default='NormalNN', help="The class name of learner")
-    parser.add_argument('--dataroot', type=str, default='data', help="The root folder of dataset or downloaded data")
+    parser.add_argument('--dataroot', type=str, default='/data', help="The root folder of dataset or downloaded data")
     parser.add_argument('--dataset', type=str, default='MNIST', help="CIFAR10|MNIST")
     parser.add_argument('--load_model_dir', type=str, default=None, help="try loading from external model directory")
     parser.add_argument('--workers', type=int, default=8, help="#Thread for dataloader")
@@ -65,7 +65,17 @@ def create_args():
     parser.add_argument('--temp', type=float, default=2., dest='temp', help="temperature for distillation")
     parser.add_argument('--mu', type=float, default=1.0, help="KD loss balancing weight")
     parser.add_argument('--beta', type=float, default=0.5, help="FT loss balancing weight")
+    
+    # ISCF Args
+    # parser.add_argument('--mu', type=float, default=1.0, help="KD loss balancing weight")
+    parser.add_argument('--sp_mu', type=float, default=1.0, help="SP KD loss balancing weight")
+    parser.add_argument('--weq_mu', type=float, default=1.0, help="Weight Equalizer regularizer")
 
+    # R-DFCIL Args
+    parser.add_argument('--ce_mu', type=float, default=1.0, help="CE loss mu for rdfcil")
+    parser.add_argument('--rkd_mu', type=float, default=1.0, help="rkd loss mu")
+    parser.add_argument('--finetuning_epochs', type=int, default=0, help="finetuning epochs")
+    parser.add_argument('--finetuning_lr', type=float, default=0.005, help="finetuning lr")
     return parser
 
 def get_args(argv):
