@@ -35,6 +35,7 @@ class Module(FeatureHookMixin, FinetuningMixin, cl.Module):
         finetuning_epochs: int = 40,
         finetuning_lr: float = 0.005,
         lambda_ce: float = 0.5,
+        lambda_ft: float = 1.0,
         lambda_hkd: float = 0.15,
         lambda_rkd: float = 0.5,
         num_inv_iters: int = 5000,

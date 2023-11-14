@@ -72,6 +72,7 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
         lambda_ce: float = 0.5,
         lambda_hkd: float = 0.15,
         lambda_sp: float = 0.5,
+        lambda_ft: float = 1.0,
         lambda_weq: float = 1.0,
         num_inv_iters: int = 5000,
         inv_lr: float = 0.001,
@@ -127,6 +128,7 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
             "ft",
             nn.functional.cross_entropy,
             ["ft_prediction", "ft_target","ft_weight"],
+            self.hparams.lambda_ft
             # self.model_old.head.num_classes / self.head.num_classes, #TODO del this
         )
         # self.register_loss(

@@ -75,6 +75,7 @@ model:
   inv_lr: 0.001
   inv_tau: 1000.0
   inv_alpha_pr: 0.001
+  lambda_ft: 1.0
   inv_alpha_rf: 50.0
   inv_resume_from: null
 data:
