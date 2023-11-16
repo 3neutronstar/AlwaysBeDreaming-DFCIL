@@ -72,9 +72,8 @@ model:
   lambda_hkd: 0.3
   lambda_sp: 50
   lambda_ft: 0.2 # 1
-  lambda_weq: 0.75
+  lambda_weq: 0.5
   fc_bias: true  
-  lambda_sp: 100
   num_inv_iters: 5000
   inv_lr: 0.001
   inv_tau: 1000.0
