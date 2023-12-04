@@ -70,6 +70,7 @@ def create_args():
     # parser.add_argument('--mu', type=float, default=1.0, help="KD loss balancing weight")
     parser.add_argument('--sp_mu', type=float, default=1.0, help="SP KD loss balancing weight")
     parser.add_argument('--weq_mu', type=float, default=1.0, help="Weight Equalizer regularizer")
+    parser.add_argument('--mixup', type=float, default=0.3, help="ISCF Mixup")
 
     # R-DFCIL Args
     parser.add_argument('--ce_mu', type=float, default=1.0, help="CE loss mu for rdfcil")

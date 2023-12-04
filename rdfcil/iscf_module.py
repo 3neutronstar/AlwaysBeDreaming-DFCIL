@@ -81,6 +81,7 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
         inv_alpha_rf: float = 50.0,
         inv_resume_from: str = None,
         fc_bias: bool = False,
+        mixup:float=0.0,
     ):
         """Module of joint project
 
