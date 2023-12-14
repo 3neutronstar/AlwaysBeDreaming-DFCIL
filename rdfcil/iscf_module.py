@@ -9,7 +9,7 @@ from typing import List
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
+import numpy as np
 import cl_lite.backbone as B
 import cl_lite.core as cl
 from cl_lite.deep_inversion import GenerativeInversion
@@ -25,6 +25,13 @@ import torch.nn as nn
 
 import torch.nn.functional as F
 from cl_lite.backbone.resnet_cifar import CifarResNet
+
+from scipy.optimize import linear_sum_assignment
+
+def cosine_similarity(a, b):
+    dot = a.matmul(b.t())
+    norm =a.norm(dim=1,keepdim=True).matmul(b.norm(dim=1,keepdim=True).t())
+    return dot / norm
 
 class ISCF_ResNet(CifarResNet):
     def __init__(self, n=5, nf=16, channels=3, preact=False, zero_residual=True, pooling_config=..., downsampling="stride", final_layer=False, all_attentions=False, last_relu=False, **kwargs):
@@ -71,6 +78,7 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
         finetuning_lr: float = 0.005,
         lambda_ce: float = 0.5,
         lambda_hkd: float = 0.15,
+        hkd_add: bool = False,
         lambda_sp: float = 0.5,
         lambda_ft: float = 1.0,
         lambda_weq: float = 1.0,
@@ -81,7 +89,8 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
         inv_alpha_rf: float = 50.0,
         inv_resume_from: str = None,
         fc_bias: bool = False,
-        mixup:float=0.0,
+        lambda_mixup:float=0.0,
+        mixup_alpha:float=0.0,
     ):
         """Module of joint project
 
@@ -217,6 +226,7 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
                 self.hparams.inv_resume_from = None
 
     def training_step(self, batch, batch_idx):
+        loss_mixup_ce=None
         input, target = batch
         if self.finetuning and self.datamodule.current_task == 0:
             zeros = torch.zeros_like(input, requires_grad=True)
@@ -266,16 +276,17 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
             kwargs["ft_prediction"] = outputs_ft
             kwargs["ft_target"]=target_all
 
-            # sp
-            loss_sp=0
-            for i in range(len(middles)):
-                loss_sp+=self.sp(middles[i],old_middles[i])
-            loss_sp=loss_sp.sum()/len(middles)*self.hparams.lambda_sp # * self.alpha * self.beta
-            
             # hkd
-            # kwargs["input_hkd"] = outputs[:, :n_old]
-            # kwargs["target_hkd"] = self.model_old.head(old_z).detach()
-            loss_kd=(F.mse_loss(outputs[:,:n_old],self.model_old.head(old_z).detach(),reduction='none').sum(dim=1))*self.hparams.lambda_hkd / (n_cur-n_old)
+            if self.hparams.hkd_add:
+                hkd_old_outputs=self.model_old.head(old_z[int(outputs.shape[0]//2):,:]).detach()
+                hkd_old_outputs_add=hkd_old_outputs.min(dim=1).values.view(-1,1).expand(hkd_old_outputs.shape[0],n_cur-n_old).detach()
+                hkd_old_outputs=torch.cat([hkd_old_outputs,hkd_old_outputs_add],dim=1)
+                hkd_new_outputs=outputs[int(outputs.shape[0]//2):,:]
+                loss_kd=(F.mse_loss(hkd_new_outputs,hkd_old_outputs,reduction='none').sum(dim=1))*self.hparams.lambda_hkd / (n_cur-n_old)
+
+                loss_kd+=(F.mse_loss(outputs[:int(outputs.shape[0]//2),:n_old],self.model_old.head(old_z[:int(outputs.shape[0]//2),:]).detach(),reduction='none').sum(dim=1))*self.hparams.lambda_hkd / (n_cur-n_old) /2
+            else:
+                loss_kd=(F.mse_loss(outputs[:,:n_old],self.model_old.head(old_z).detach(),reduction='none').sum(dim=1))*self.hparams.lambda_hkd / (n_cur-n_old)
             loss_kd=loss_kd.mean()
             # weq
             w = self.head.embeddings
@@ -288,11 +299,53 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
 
             last_params = w.detach()
             cur_params = w
-            # print(last_params.shape,cur_params.shape,w.shape)
-            # print(last_params.norm(dim=1,keepdim=True).mean().view(-1).expand(n_cur).shape)
-            # print(cur_params.norm(dim=1).shape)
             
             loss_weq=F.mse_loss(last_params.norm(dim=1,keepdim=True).mean().view(-1).expand(n_cur),cur_params.norm(dim=1)) *self.hparams.lambda_weq# * self.alpha * self.beta * 1.
+
+            # mixup (feature level)
+            if self.hparams.lambda_mixup>0:
+                # sp
+                loss_sp=0
+                for i in range(len(middles)):
+                    if i == len(middles)-1:
+                        latent_vector = F.adaptive_avg_pool2d(middles[i], (1, 1)).view(middles[i].shape[0], -1)
+                        latent=latent_vector[:int(latent_vector.shape[0]//2),:] # latent from new data
+                        old_latent=latent_vector[int(latent_vector.shape[0]//2):,:] # latent from old data
+                    loss_sp+=self.sp(middles[i],old_middles[i])
+                loss_sp=loss_sp.sum()/len(middles)*self.hparams.lambda_sp
+                # mixup
+                lam = np.random.beta(self.hparams.mixup_alpha, self.hparams.mixup_alpha)
+                
+                old_index=torch.randperm(int(input_int.shape[0]//2)).to(self.device)
+                latent_mixup=old_latent*lam+old_latent[old_index]*(1-lam) # mixup with latent from old data
+
+                B = input.shape[0] # new data size
+                HB = input_int.shape[0] # all data size
+                similarity = cosine_similarity(latent.view(B,-1),old_latent.view(B,-1))
+                row, col = linear_sum_assignment(similarity.detach().cpu().numpy())
+                matching_mixup = latent[row]*lam+old_latent[col]*(1-lam) # mixup with latent from new data
+
+                cat_latent=torch.cat([matching_mixup,latent_mixup],dim=0).view(2*B,-1,1,1) # cat 순서 유의
+                target_onehot=F.one_hot(target_all,n_cur).float()
+                old_target_onehot=target_onehot[int(target_onehot.shape[0]//2):,:]
+
+                latent_mixup_onehot=old_target_onehot*lam+old_target_onehot[old_index]*(1-lam) # mixup with latent from old data
+
+                matching_target_onehot= target_onehot[:int(target_onehot.shape[0]//2),:][row]*lam+old_target_onehot[col]*(1-lam) # mixup with latent from new data
+
+                cat_onehot=torch.cat([matching_target_onehot,latent_mixup_onehot],dim=0) # cat 순서 유의
+                
+                # mixup loss (onehot ce)
+                loss_mixup_ce=-(cat_onehot*torch.log_softmax(self.head(cat_latent.detach().clone()),dim=1)).sum(dim=1).mean()
+                                
+
+            else: # without mixup
+                # sp
+                loss_sp=0
+                for i in range(len(middles)):
+                    loss_sp+=self.sp(middles[i],old_middles[i])
+                loss_sp=loss_sp.sum()/len(middles)*self.hparams.lambda_sp # * self.alpha * self.beta
+                
         else: # task 0
             mappings = torch.ones((n_cur), dtype=torch.float32,device=self.device)
             dw_cls = mappings
@@ -315,6 +368,9 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
                     "loss/sp":loss_sp
                 }
             )
+            if loss_mixup_ce is not None:
+                loss_dict.update({"loss/mixup_ce":loss_mixup_ce})
+                loss+=loss_mixup_ce*self.hparams.lambda_mixup
             loss+=(loss_weq+loss_sp+loss_kd)
 
         self.log_dict(loss_dict)
