@@ -62,26 +62,27 @@ model:
   base_lr: 0.1
   momentum: 0.9
   weight_decay: 0.0005
+  fc_bias: true
   lr_factor: 0.1
   milestones:
   - 80
   - 120
-  finetuning_epochs: 0
-  finetuning_lr: 0.005
+  finetuning_epochs: 10
+  finetuning_lr: 0.0001
   lambda_ce: 0.8
-  lambda_hkd: 0.3
+  lambda_hkd: 0.4
+  hkd_add: False
   lambda_sp: 50
-  lambda_ft: 0.1 # 1
-  lambda_weq: 0.5
-  fc_bias: true  
-  num_inv_iters: 5000
+  lambda_ft: 0.5 # 1
+  lambda_weq: 0.75
+  lambda_mixup: 0.0
+  mixup_alpha: 0.2
+  num_inv_iters: 50
   inv_lr: 0.001
   inv_tau: 1000.0
   inv_alpha_pr: 0.001
   inv_alpha_rf: 50.0
   inv_resume_from: null
-  lambda_mixup: 0.1
-  mixup_alpha: 0.2
 data:
   root: /data
   dataset: cifar100
@@ -89,7 +90,7 @@ data:
   num_workers: 4
   val_splits: 0
   val_seed: 42
-  num_tasks: 10
+  num_tasks: 5
   current_task: 0
   class_order: []
   init_task_splits: 0

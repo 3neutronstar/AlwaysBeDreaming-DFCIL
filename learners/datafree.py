@@ -1,4 +1,5 @@
 from __future__ import print_function
+from sklearn.metrics import confusion_matrix
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -6,6 +7,7 @@ import models
 from utils.distillation_rkd import RKDAngleLoss
 from utils.metric import AverageMeter, Timer
 import numpy as np
+from .margin_loss import LargeMarginLoss
 from .datafree_helper import Teacher
 from .default import NormalNN, weight_reset, accumulate_acc, loss_fn_kd
 import copy
@@ -36,7 +38,7 @@ class DeepInversionGenBN(NormalNN):
     ##########################################
     #           MODEL TRAINING               #
     ##########################################
-    def _pretuning(self, val_loader):
+    def _pretuning(self, val_loader, model_save_dir):
         pass
 
     def learn_batch(self, train_loader, train_dataset, model_save_dir, val_loader=None):
@@ -66,7 +68,7 @@ class DeepInversionGenBN(NormalNN):
                 self.validation(val_loader)
 
             if self.pretuning and self.inversion_replay:
-                self._pretuning(val_loader)
+                self._pretuning(val_loader,model_save_dir)
 
             # losses = [AverageMeter() for i in range(3)]
             losses = [AverageMeter() for i in range(5)]
@@ -267,13 +269,14 @@ class DeepInversionGenBN(NormalNN):
         x, y = torch.cat(x), torch.cat(y)
         return x, y
 
-    def save_model(self, filename):
+    def save_model(self, filename,save_gen=True):
         
         model_state = self.generator.state_dict()
         for key in model_state.keys():  # Always save it to cpu
             model_state[key] = model_state[key].cpu()
         self.log('=> Saving generator model to:', filename)
-        torch.save(model_state, filename + 'generator.pth')
+        if save_gen:
+            torch.save(model_state, filename + 'generator.pth')
         super(DeepInversionGenBN, self).save_model(filename)
 
     def load_model(self, filename):
@@ -355,6 +358,14 @@ class AlwaysBeDreaming(DeepInversionGenBN):
         super(AlwaysBeDreaming, self).__init__(learner_config)
         self.kl_loss = nn.KLDivLoss(reduction='batchmean').cuda()
 
+        self.large_margin_criterion = LargeMarginLoss(
+                                                gamma=self.config['margin_gamma'], #10000
+                                                alpha_factor=4,
+                                                top_k=1,
+                                                dist_norm=np.inf,
+                                                reduction='none'
+                                            )
+        
     def update_model(self, inputs, targets, target_scores = None, dw_force = None, kd_index = None):
         
         # class balancing
@@ -367,29 +378,43 @@ class AlwaysBeDreaming(DeepInversionGenBN):
         dw_cls = mappings[targets.long()]
 
         # forward pass
-        logits_pen = self.model.forward(x=inputs, pen=True)
+        logits_pen,m = self.model.forward(inputs, middle=True)
         if len(self.config['gpuid']) > 1:
             logits = self.model.module.last(logits_pen)
         else:
             logits = self.model.last(logits_pen)
         
         # classification 
-        class_idx = np.arange(self.batch_size)
+        real_class_idx = np.arange(self.batch_size)
+        fake_class_idx = np.arange(self.batch_size,2*self.batch_size)
         if self.inversion_replay:
 
             # local classification
-            loss_class = self.criterion(logits[class_idx,self.last_valid_out_dim:self.valid_out_dim], (targets[class_idx]-self.last_valid_out_dim).long(), dw_cls[class_idx]) 
-
-            # ft classification  
-            with torch.no_grad():             
-                feat_class = self.model.forward(x=inputs, pen=True).detach()
-            if len(self.config['gpuid']) > 1:
-                loss_class += self.criterion(self.model.module.last(feat_class), targets.long(), dw_cls)
-            else:
-                loss_class += self.criterion(self.model.last(feat_class), targets.long(), dw_cls)
+            loss_class = self.criterion(logits[real_class_idx,self.last_valid_out_dim:self.valid_out_dim], (targets[real_class_idx]-self.last_valid_out_dim).long(), dw_cls[real_class_idx]) 
+            
+            # ft classification
+            if not self.config['use_margin']:
+                if len(self.config['gpuid']) > 1:
+                    loss_class += self.criterion(self.model.module.last(logits_pen.detach()), targets.long(), dw_cls)
+                else:
+                    loss_class += self.criterion(self.model.last(logits_pen.detach()), targets.long(), dw_cls)
+            else: # margin loss
+                f_m=[]
+                m_idx=0
+                total_m=len(m)
+                for m_ in m:
+                    if m_idx==(total_m-1): # last feature map only
+                        f_m.append(m_)#[fake_class_idx])
+                    m_idx+=1
+                # margin loss for fake data
+                fake_logits=logits[:,:self.valid_out_dim]# .clone()
+                loss_class += self.config['margin_mu']*self.large_margin_criterion(fake_logits, F.one_hot(targets, self.valid_out_dim), f_m, dw_cls)[fake_class_idx].mean()
+                # ft classification for real data
+                loss_class += self.criterion(self.model.last(logits_pen[real_class_idx].detach()), targets[real_class_idx].long(), dw_cls[real_class_idx])
+        
             
         else:
-            loss_class = self.criterion(logits[class_idx], targets[class_idx].long(), dw_cls[class_idx])
+            loss_class = self.criterion(logits[real_class_idx], targets[real_class_idx].long(), dw_cls[real_class_idx])
 
         # KD
         if target_scores is not None:
@@ -438,8 +463,15 @@ class ISCF(DeepInversionGenBN):
         super(ISCF, self).__init__(learner_config)
         #SPKD loss definition
         self.md_criterion = SP(reduction='none')
-
-
+        
+        self.large_margin_criterion = LargeMarginLoss(
+                                                gamma=self.config['margin_gamma'], #10000
+                                                alpha_factor=4,
+                                                top_k=1,
+                                                dist_norm=np.inf,
+                                                reduction='none'
+                                            )
+    
     def update_model(self, inputs, targets, target_scores = None, dw_force = None, kd_index = None):
         task_step=self.valid_out_dim-self.last_valid_out_dim
         # class balancing
@@ -461,20 +493,35 @@ class ISCF(DeepInversionGenBN):
             logits = self.model.last(logits_pen)
         
         # classification 
-        class_idx = np.arange(self.batch_size) # real
+        real_class_idx = np.arange(self.batch_size) # real
+        fake_class_idx = np.arange(self.batch_size,2*self.batch_size) # real
         if self.inversion_replay:
             # local classification - LCE loss: the logit dimension is from last_valid_out_dim to valid_out_dim
-            loss_class = self.criterion(logits[class_idx,self.last_valid_out_dim:self.valid_out_dim], (targets[class_idx]-self.last_valid_out_dim).long(), dw_cls[class_idx]) 
+            loss_class = self.criterion(logits[real_class_idx,self.last_valid_out_dim:self.valid_out_dim], (targets[real_class_idx]-self.last_valid_out_dim).long(), dw_cls[real_class_idx]) 
             
-            # ft classification  
-            if len(self.config['gpuid']) > 1:
-                loss_class += self.criterion(self.model.module.last(logits_pen.detach()), targets.long(), dw_cls)
-            else:
-                loss_class += self.criterion(self.model.last(logits_pen.detach()), targets.long(), dw_cls)
+            # ft classification
+            if not self.config['use_margin']:
+                if len(self.config['gpuid']) > 1:
+                    loss_class += self.criterion(self.model.module.last(logits_pen.detach()), targets.long(), dw_cls)
+                else:
+                    loss_class += self.criterion(self.model.last(logits_pen.detach()), targets.long(), dw_cls)
+            else: # margin loss
+                f_m=[]
+                m_idx=0
+                total_m=len(m)
+                for m_ in m:
+                    if m_idx==(total_m-1): # last feature map only
+                        f_m.append(m_)#[fake_class_idx])
+                    m_idx+=1
+                # margin loss for fake data
+                fake_logits=logits[:,:self.valid_out_dim]# .clone()
+                loss_class += self.config['margin_mu']*self.large_margin_criterion(fake_logits, F.one_hot(targets, self.valid_out_dim), f_m, dw_cls)[fake_class_idx].mean()
+                # ft classification for real data
+                loss_class += self.criterion(self.model.last(logits_pen[real_class_idx].detach()), targets[real_class_idx].long(), dw_cls[real_class_idx])
         
         #first task local classification when we do not use any synthetic data     
         else:
-            loss_class = self.criterion(logits[class_idx], targets[class_idx].long(), dw_cls[class_idx])
+            loss_class = self.criterion(logits[real_class_idx], targets[real_class_idx].long(), dw_cls[real_class_idx])
         
         add_index= np.arange(2*self.batch_size) # real n fake
         if self.previous_teacher: # after 2nd task
@@ -533,6 +580,342 @@ class ISCF(DeepInversionGenBN):
 
         return total_loss.detach(), loss_class.detach(), (loss_lkd.detach(), loss_sp.detach(), weq_regularizer.detach()), logits
     
+class ISCF_Add(DeepInversionGenBN):
+
+    def __init__(self, learner_config):
+        super(ISCF_Add, self).__init__(learner_config)
+        #SPKD loss definition
+        self.md_criterion = SP(reduction='none')
+        
+        self.large_margin_criterion = LargeMarginLoss(
+                                                gamma=self.config['margin_gamma'], #10000
+                                                alpha_factor=4,
+                                                top_k=1,
+                                                dist_norm=np.inf,
+                                                reduction='none'
+                                            )
+    def set_last(self):
+        # set new last_valid_out_dim
+        self.additional_last = nn.Linear(self.last_valid_out_dim, self.valid_out_dim).to(self.device)
+        # add to optimization
+        self.optimizer.add_param_group({'params': self.additional_last.parameters()})
+
+    def merge_last(self):
+        # merge last_valid_out_dim
+        # first. extract right dimension from self.model.last[:, :self.valid_out_dim]
+        # second. multiply with self.additional_last.weight
+        # third. multiply with self.additional_last.bias
+        if len(self.config['gpuid']) > 1:
+            self.model.module.last.weight.data[:self.valid_out_dim,:] = torch.mm(self.additional_last.weight, self.model.module.last.weight[:self.last_valid_out_dim,:])
+            self.model.module.last.bias.data[:self.valid_out_dim] = torch.mv(self.additional_last.weight, self.model.module.last.bias[:self.last_valid_out_dim]) + self.additional_last.bias
+        else:
+            self.model.last.weight.data[:self.valid_out_dim,:] = torch.mm(self.additional_last.weight, self.model.last.weight[:self.last_valid_out_dim,:])
+            self.model.last.bias.data[:self.valid_out_dim] = torch.mv(self.additional_last.weight, self.model.last.bias[:self.last_valid_out_dim]) + self.additional_last.bias
+
+        # remove from optimization
+        self.optimizer.param_groups.pop()
+    
+    def learn_batch(self, train_loader, train_dataset, model_save_dir, val_loader=None):
+        self.pre_steps()
+
+        # try to load model
+        need_train = True
+        if not self.overwrite:
+            try:
+                self.load_model(model_save_dir)
+                need_train = False
+            except:
+                pass
+
+        # trains
+        if need_train:
+            if self.reset_optimizer:  # Reset optimizer before learning each task
+                self.log('Optimizer is reset!')
+                self.init_optimizer()
+            if self.inversion_replay:
+                self.set_last()
+
+            # data weighting
+            self.data_weighting(train_dataset)
+
+            # Evaluate the performance of current task
+            self.log('Epoch:{epoch:.0f}/{total:.0f}'.format(epoch=0,total=self.config['schedule'][-1]))
+            if val_loader is not None:
+                self.validation(val_loader, on_train=False)
+
+            if self.pretuning and self.inversion_replay:
+                self._pretuning(val_loader,model_save_dir)
+
+            # losses = [AverageMeter() for i in range(3)]
+            losses = [AverageMeter() for i in range(5)]
+            acc = AverageMeter()
+            accg = AverageMeter()
+            batch_time = AverageMeter()
+            batch_timer = Timer()
+            self.save_gen = False
+            self.save_gen_later = False
+            for epoch in range(self.config['schedule'][-1]):
+                self.epoch=epoch
+                if epoch > 0: self.scheduler.step()
+                for param_group in self.optimizer.param_groups:
+                    self.log('LR:', param_group['lr'])
+                batch_timer.tic()
+                for i, (x, y, task)  in enumerate(train_loader):
+
+                    # verify in train mode
+                    self.model.train()
+
+                    # send data to gpu
+                    if self.gpu:
+                        x =x.cuda()
+                        y = y.cuda()
+
+                    # data replay
+                    if self.inversion_replay:
+                        x_replay, y_replay, y_replay_hat = self.sample(self.previous_teacher, len(x), self.device)
+
+                    # if KD
+                    if self.inversion_replay:
+                        y_hat = self.previous_teacher.generate_scores(x, allowed_predictions=np.arange(self.last_valid_out_dim))
+                        _, y_hat_com = self.combine_data(((x, y_hat),(x_replay, y_replay_hat)))
+                    else:
+                        y_hat_com = None
+
+                    # combine inputs and generated samples for classification
+                    if self.inversion_replay:
+                        x_com, y_com = self.combine_data(((x, y),(x_replay, y_replay)))
+                    else:
+                        x_com, y_com = x, y
+
+                    # sd data weighting (NOT online learning compatible)
+                    if self.dw:
+                        dw_cls = self.dw_k[y_com.long()]
+                    else:
+                        dw_cls = None
+
+                    # model update
+                    loss, loss_class, loss_other, output= self.update_model(x_com, y_com, y_hat_com, dw_force = dw_cls, kd_index = np.arange(len(x), len(x_com)))
+                    # loss, loss_class, loss_kd, output= self.update_model(x_com, y_com, y_hat_com, dw_force = dw_cls, kd_index = np.arange(len(x), len(x_com)))
+
+                    
+                    # measure elapsed time
+                    batch_time.update(batch_timer.toc()) 
+
+                    # measure accuracy and record loss
+                    y_com = y_com.detach()
+                    accumulate_acc(output[:self.batch_size], y_com[:self.batch_size], task, acc, topk=(self.top_k,))
+                    if self.inversion_replay: accumulate_acc(output[self.batch_size:], y_com[self.batch_size:], task, accg, topk=(self.top_k,))
+                    losses[0].update(loss,  y_com.size(0)) 
+                    losses[1].update(loss_class,  y_com.size(0))
+                    if type(loss_other)==tuple:
+                        loss_kd, loss_middle, loss_balancing = loss_other
+                        losses[2].update(loss_kd,  y_com.size(0))
+                        losses[3].update(loss_middle,  y_com.size(0))
+                        losses[4].update(loss_balancing,  y_com.size(0))
+                    else:
+                        loss_kd = loss_other
+                        losses[2].update(loss_kd,  y_com.size(0))
+                    batch_timer.tic()
+
+                # eval update
+                self.log('Epoch:{epoch:.0f}/{total:.0f}'.format(epoch=self.epoch+1,total=self.config['schedule'][-1]))
+                # self.log(' * Loss {loss.avg:.3f} | CE Loss {lossb.avg:.3f} | KD Loss {lossc.avg:.3f}'.format(loss=losses[0],lossb=losses[1],lossc=losses[2]))
+                self.log(' * Loss {loss.avg:.4e} | CE Loss {lossb.avg:.4e} | LKD Loss {lossc.avg:.4e} | SP Loss {lossd.avg:.4e} | WEQ Reg {losse.avg:.4e}'.format(loss=losses[0],lossb=losses[1],lossc=losses[2],lossd=losses[3],losse=losses[4]))
+                self.log(' * Train Acc {acc.avg:.3f} | Train Acc Gen {accg.avg:.3f}'.format(acc=acc,accg=accg))
+
+                # Evaluate the performance of current task
+                if val_loader is not None:
+                    self.validation(val_loader, on_train=True)
+
+                # reset
+                losses = [AverageMeter() for i in range(5)]
+                acc = AverageMeter()
+                accg = AverageMeter()
+                self.epoch_end()
+
+        if self.inversion_replay and need_train:
+            self.merge_last()
+        self.model.eval()
+        self.last_last_valid_out_dim = self.last_valid_out_dim
+        self.last_valid_out_dim = self.valid_out_dim
+        self.first_task = False
+
+        # for eval
+        if self.previous_teacher is not None:
+            self.previous_previous_teacher = self.previous_teacher
+        
+        # new teacher
+        if (self.out_dim == self.valid_out_dim): need_train = False
+        self.previous_teacher = Teacher(solver=copy.deepcopy(self.model), generator=self.generator, gen_opt = self.generator_optimizer, img_shape = (-1, train_dataset.nch,train_dataset.im_size, train_dataset.im_size), iters = self.power_iters, deep_inv_params = self.deep_inv_params, class_idx = np.arange(self.valid_out_dim), train = need_train, config = self.config)
+        self.sample(self.previous_teacher, self.batch_size, self.device, return_scores=False)
+        if len(self.config['gpuid']) > 1:
+            self.previous_linear = copy.deepcopy(self.model.module.last)
+        else:
+            self.previous_linear = copy.deepcopy(self.model.last)
+        self.inversion_replay = True
+
+        try:
+            return batch_time.avg
+        except:
+            return None
+
+    def validation(self, dataloader, model=None, task_in = None,  verbal = True, confusion_mat=False, on_train=False):
+
+        if model is None:
+            model = self.model
+
+        # This function doesn't distinguish tasks.
+        batch_timer = Timer()
+        acc = AverageMeter()
+        batch_timer.tic()
+        y_true=[]
+        y_pred=[]
+
+        orig_mode = model.training
+        model.eval()
+        for i, (input, target, task) in enumerate(dataloader):
+
+            if self.gpu:
+                with torch.no_grad():
+                    input = input.cuda()
+                    target = target.cuda()
+            if task_in is None:
+                output = model.forward(input)[:, :self.valid_out_dim]
+                if self.inversion_replay and on_train:
+                    output = self.additional_last(output[:,:self.last_valid_out_dim])
+                acc = accumulate_acc(output, target, task, acc, topk=(self.top_k,))
+            else:
+                mask = target >= task_in[0]
+                mask_ind = mask.nonzero().view(-1) 
+                input, target = input[mask_ind], target[mask_ind]
+
+                mask = target < task_in[-1]
+                mask_ind = mask.nonzero().view(-1) 
+                input, target = input[mask_ind], target[mask_ind]
+                
+                if len(target) > 1:
+                    output = model.forward(input)[:, task_in]
+                    if self.inversion_replay and on_train:
+                        output = self.additional_last(output[:,:self.last_valid_out_dim])
+                    acc = accumulate_acc(output, target-task_in[0], task, acc, topk=(self.top_k,))
+            if confusion_mat:
+                y_true.append(target.detach().cpu())
+                y_pred.append(output.argmax(dim=1).detach().cpu())
+        model.train(orig_mode)
+
+        if confusion_mat:
+            y_true=torch.cat(y_true, dim=0)
+            y_pred=torch.cat(y_pred, dim=0)
+            cm = confusion_matrix(y_true, y_pred)
+            return cm
+
+        if verbal:
+            self.log(' * Val Acc {acc.avg:.3f}, Total time {time:.2f}'
+                    .format(acc=acc, time=batch_timer.toc()))
+        return acc.avg
+
+    def get_merged_linear(self):
+        if len(self.config['gpuid'])>1:
+            merged_weight = torch.mm(self.additional_last.weight, self.model.module.last.weight[:self.last_valid_out_dim,:])
+            merged_bias = torch.mv(self.additional_last.weight, self.model.module.last.bias[:self.last_valid_out_dim]) + self.additional_last.bias
+        else:
+            merged_weight = torch.mm(self.additional_last.weight, self.model.last.weight[:self.last_valid_out_dim,:])
+            # print(self.model.last.bias.shape, self.additional_last.bias.shape, self.additional_last.weight.shape)
+            merged_bias = torch.mv(self.additional_last.weight, self.model.last.bias[:self.last_valid_out_dim]) + self.additional_last.bias
+        return merged_weight, merged_bias
+    
+    def forward_last(self, latent_vector):
+
+        if self.inversion_replay:
+            if len(self.config['gpuid']) > 1:
+                last_logit = self.model.module.last(latent_vector)[:,:self.last_valid_out_dim]
+            else:
+                last_logit = self.model.last(latent_vector)[:,:self.last_valid_out_dim]
+            return self.additional_last(last_logit), last_logit
+        else:
+            if len(self.config['gpuid']) > 1:
+                last_logit = self.model.module.last(latent_vector)
+            else:
+                last_logit = self.model.last(latent_vector)
+            return last_logit, last_logit
+
+    def update_model(self, inputs, targets, target_scores = None, dw_force = None, kd_index = None):
+        task_step=self.valid_out_dim-self.last_valid_out_dim
+        # class balancing
+        mappings = torch.ones(targets.size(), dtype=torch.float32)
+        if self.gpu:
+            mappings = mappings.cuda()
+
+        rnt = 1.0 * self.last_valid_out_dim / self.valid_out_dim
+        mappings[:self.last_valid_out_dim] = rnt
+        mappings[self.last_valid_out_dim:] = 1-rnt
+        dw_cls = mappings[targets.long()]
+
+        # forward pass
+        logits_pen,m = self.model.forward(inputs, middle=True)
+
+        logits, last_logits = self.forward_last(logits_pen)
+        
+        # classification 
+        real_class_idx = np.arange(self.batch_size) # real
+        if self.inversion_replay:
+            # local classification - LCE loss: the logit dimension is from last_valid_out_dim to valid_out_dim
+            loss_class = self.criterion(logits[real_class_idx,self.last_valid_out_dim:self.valid_out_dim], (targets[real_class_idx]-self.last_valid_out_dim).long(), dw_cls[real_class_idx]) 
+            
+            # ft classification
+            ft_output, _ = self.forward_last(logits_pen.detach())
+            loss_class += self.criterion(ft_output, targets.long(), dw_cls)
+        else:
+            #first task local classification when we do not use any synthetic data     
+            loss_class = self.criterion(logits[real_class_idx], targets[real_class_idx].long(), dw_cls[real_class_idx])
+        
+        add_index= np.arange(2*self.batch_size) # real n fake
+        if self.previous_teacher: # after 2nd task
+            with torch.no_grad():
+                logits_prev, pm = self.previous_teacher.solver.forward(inputs[add_index],middle=True)
+            #SPKD - Intermediate KD
+            if len(pm)==3:
+                out1_pm,out2_pm,out3_pm=pm
+                out1_m,out2_m,out3_m=m
+                loss_sp = (self.md_criterion(out1_m[add_index],out1_pm)+self.md_criterion(out2_m[add_index],out2_pm)+self.md_criterion(out3_m[add_index],out3_pm))/3.
+            else: # for imagenet
+                out1_pm,out2_pm,out3_pm,out4_pm=pm
+                out1_m,out2_m,out3_m,out4_m=m
+                loss_sp = (self.md_criterion(out1_m[add_index],out1_pm)+self.md_criterion(out2_m[add_index],out2_pm)+self.md_criterion(out3_m[add_index],out3_pm)+self.md_criterion(out4_m[add_index],out4_pm))/4.
+            loss_sp = loss_sp.mean()*self.config['sp_mu']
+            # Logit KD for maintaining the output probability 
+            with torch.no_grad():
+                # logits_prevpen = self.previous_teacher.solver.forward(inputs[add_index],pen=True)
+                logits_prev=self.previous_linear(logits_prev)[:,:self.last_valid_out_dim].detach()
+            loss_lkd=(F.mse_loss(last_logits, logits_prev, reduction='none').sum(dim=1)) * self.mu / task_step
+            loss_lkd=loss_lkd.mean()
+        else:
+            loss_sp=torch.zeros((1,), requires_grad=True).cuda()
+            loss_lkd = torch.zeros((1,), requires_grad=True).cuda()
+
+        # weight equalizer for balancing the average norm of weight 
+        if self.previous_teacher:
+            merged_weight, merged_bias = self.get_merged_linear()
+            last_weights=merged_weight.detach()
+            last_bias=merged_bias.detach().unsqueeze(-1)
+
+            last_params = torch.cat([last_weights[:self.valid_out_dim,:], last_bias],dim=1)
+            cur_params  = torch.cat([merged_weight[:self.valid_out_dim,:], merged_bias.unsqueeze(-1)],dim=1)
+            weq_regularizer=F.mse_loss(last_params.norm(dim=1,keepdim=True).mean().expand(self.valid_out_dim),cur_params.norm(dim=1))
+            weq_regularizer*=self.config['weq_mu']
+        else:
+            weq_regularizer=torch.zeros((1,),requires_grad=True).cuda()
+
+        # calculate the 5 losses - LCE + SPKD + LKD + FT + WEQ, loss_class include the LCE and FT losses
+        total_loss = loss_class + loss_lkd + loss_sp + weq_regularizer
+
+        self.optimizer.zero_grad()
+        total_loss.backward()
+        # step
+        self.optimizer.step()
+
+        return total_loss.detach(), loss_class.detach(), (loss_lkd.detach(), loss_sp.detach(), weq_regularizer.detach()), logits
+    
 class ISCF_Pretuning(DeepInversionGenBN):
 
     def __init__(self, learner_config):
@@ -541,7 +924,7 @@ class ISCF_Pretuning(DeepInversionGenBN):
         self.md_criterion = SP(reduction='none')
         self.pretuning=True
 
-    def _pretuning(self, val_loader):
+    def _pretuning(self, val_loader, model_save_dir):
         ## pretuning
         self.log('===============pretuning================')
         losses = [AverageMeter() for i in range(5)]
@@ -600,6 +983,8 @@ class ISCF_Pretuning(DeepInversionGenBN):
         # Evaluate the performance of current task
         if val_loader is not None:
             self.validation(val_loader)
+        # save model
+        self.save_model(model_save_dir + 'pretuning_',save_gen=False)
 
     def update_model(self, inputs, targets, target_scores = None, dw_force = None, kd_index = None, pretuning=False):
         task_step=self.valid_out_dim-self.last_valid_out_dim

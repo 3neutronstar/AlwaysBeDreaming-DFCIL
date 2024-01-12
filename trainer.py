@@ -142,6 +142,9 @@ class Trainer:
                         'rkd_mu': args.rkd_mu,
                         'finetuning_epochs': args.finetuning_epochs,
                         'finetuning_lr': args.finetuning_lr,
+                        'use_margin': args.use_margin,
+                        'margin_mu': args.margin_mu,
+                        'margin_gamma': args.margin_gamma,
                         }
         self.learner_type, self.learner_name = args.learner_type, args.learner_name
         self.learner = learners.__dict__[self.learner_type].__dict__[self.learner_name](self.learner_config)

@@ -78,6 +78,10 @@ def create_args():
     parser.add_argument('--rkd_mu', type=float, default=1.0, help="rkd loss mu")
     parser.add_argument('--finetuning_epochs', type=int, default=0, help="finetuning epochs")
     parser.add_argument('--finetuning_lr', type=float, default=0.005, help="finetuning lr")
+
+    parser.add_argument('--margin_mu', type=float, default=1.0, help="margin loss mu")
+    parser.add_argument('--margin_gamma', type=float, default=1000, help="margin loss gamma")
+    parser.add_argument('--use_margin', default=False, action='store_true', help='use margin loss instead of ft')
     return parser
 
 def get_args(argv):

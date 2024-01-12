@@ -69,9 +69,9 @@ model:
   finetuning_epochs: 0
   finetuning_lr: 0.005
   lambda_ce: 0.8
-  lambda_hkd: 0.3
+  lambda_hkd: 0.4
   lambda_sp: 50
-  lambda_ft: 0.1 # 1
+  lambda_ft: 0.2 # 1
   lambda_weq: 0.5
   fc_bias: true  
   num_inv_iters: 5000
@@ -80,8 +80,9 @@ model:
   inv_alpha_pr: 0.001
   inv_alpha_rf: 50.0
   inv_resume_from: null
-  lambda_mixup: 0.1
-  mixup_alpha: 0.2
+  hkd_split: True
+  hkd_real_temp: 3.0
+  hkd_old_temp: 0.8
 data:
   root: /data
   dataset: cifar100

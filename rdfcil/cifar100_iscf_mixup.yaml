@@ -75,7 +75,7 @@ model:
   lambda_sp: 50
   lambda_ft: 0.4 # 1
   lambda_weq: 0.75
-  lambda_mixup: 0.2
+  lambda_mixup: 0.1
   mixup_alpha: 0.2
   num_inv_iters: 5000
   inv_lr: 0.001

@@ -71,7 +71,7 @@ model:
   lambda_ce: 0.8
   lambda_hkd: 0.3
   lambda_sp: 50
-  lambda_ft: 0.0 # 1
+  lambda_ft: 0.1 # 1
   lambda_weq: 0.75
   num_inv_iters: 5000
   inv_lr: 0.001
@@ -80,7 +80,7 @@ model:
   inv_alpha_rf: 50.0
   fc_bias: true  
   inv_resume_from: null
-  lambda_mixup: 0.2
+  lambda_mixup: 0.1
   mixup_alpha: 0.2
 data:
   root: /data
