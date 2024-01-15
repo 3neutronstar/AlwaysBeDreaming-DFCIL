@@ -4,7 +4,7 @@ from cl_lite.core import App
 
 from datamodule import DataModule
 from iscf_module import ISCFModule
-# from module import Module
+from module import Module
 
 
 app = App(
