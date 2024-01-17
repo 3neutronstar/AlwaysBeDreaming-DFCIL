@@ -69,7 +69,7 @@ model:
   finetuning_epochs: 0
   finetuning_lr: 0.005
   lambda_ce: 0.8
-  lambda_hkd: 0.3
+  lambda_hkd: 0.5
   lambda_sp: 50
   lambda_ft: 0.2 # 1
   lambda_weq: 0.5
