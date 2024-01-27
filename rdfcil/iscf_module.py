@@ -308,13 +308,14 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
 
             # hkd
             if self.hparams.hkd_add:
-                hkd_old_outputs=self.model_old.head(old_z[int(outputs.shape[0]//2):,:]).detach()
-                hkd_old_outputs_add=hkd_old_outputs.min(dim=1).values.view(-1,1).expand(hkd_old_outputs.shape[0],n_cur-n_old).detach()
-                hkd_old_outputs=torch.cat([hkd_old_outputs,hkd_old_outputs_add],dim=1)
-                hkd_new_outputs=outputs[int(outputs.shape[0]//2):,:]
-                loss_kd=(F.mse_loss(hkd_new_outputs,hkd_old_outputs,reduction='none').sum(dim=1))*self.hparams.lambda_hkd / (n_cur-n_old)
+                # hkd_old_outputs=self.model_old.head(old_z[int(outputs.shape[0]//2):,:]).detach()
+                # hkd_old_outputs_add=hkd_old_outputs.min(dim=1).values.view(-1,1).expand(hkd_old_outputs.shape[0],n_cur-n_old).detach()
+                # hkd_old_outputs=torch.cat([hkd_old_outputs,hkd_old_outputs_add],dim=1)
+                # hkd_new_outputs=outputs[int(outputs.shape[0]//2):,:]
+                # loss_kd=(F.mse_loss(hkd_new_outputs,hkd_old_outputs,reduction='none').sum(dim=1))*self.hparams.lambda_hkd / (n_cur-n_old)
 
-                loss_kd+=(F.mse_loss(outputs[:int(outputs.shape[0]//2),:n_old],self.model_old.head(old_z[:int(outputs.shape[0]//2),:]).detach(),reduction='none').sum(dim=1))*self.hparams.lambda_hkd / (n_cur-n_old) /2
+                # loss_kd+=(F.mse_loss(outputs[:int(outputs.shape[0]//2),:n_old],self.model_old.head(old_z[:int(outputs.shape[0]//2),:]).detach(),reduction='none').sum(dim=1))*self.hparams.lambda_hkd / (n_cur-n_old) /2
+                loss_kd=(F.mse_loss(outputs[:,:n_old],self.model_old.head(old_z).detach(),reduction='none').mean(dim=1))*self.hparams.lambda_hkd
             else:
                 loss_kd=(F.mse_loss(outputs[:,:n_old],self.model_old.head(old_z).detach(),reduction='none').sum(dim=1))*self.hparams.lambda_hkd / (n_cur-n_old)
             loss_kd=loss_kd.mean()
