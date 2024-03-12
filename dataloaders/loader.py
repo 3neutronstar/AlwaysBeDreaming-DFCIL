@@ -546,7 +546,7 @@ class iCIFAR100(iCIFAR10):
 
 class iIMAGENET(iDataset):
     
-    base_folder = 'ilsvrc'
+    base_folder = 'imagenet'
     im_size=224
     nch=3
     def load(self):
@@ -557,7 +557,7 @@ class iIMAGENET(iDataset):
             images_path = os.path.join(images_path, 'train')
             data_dict = get_data(images_path)
         else:
-            images_path = os.path.join(images_path, 'val')
+            images_path = os.path.join(images_path, 'val3')
             data_dict = get_data(images_path)
         y = 0
         for key in data_dict.keys():

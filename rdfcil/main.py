@@ -6,10 +6,14 @@ from datamodule import DataModule
 from module import Module
 # from iscf_module_ijcv import ISCFModule
 from iscf_module import ISCFModule
+from iscf_module_ft_balanced import ISCFModuleFTB
+from iscf_module_ft import ISCFModuleFT
 
 
 app = App(
-    ISCFModule,
+    ISCFModuleFTB,
+    # ISCFModuleFT,
+    # ISCFModule,
     # Module,
     DataModule,
     gpus=-1,
