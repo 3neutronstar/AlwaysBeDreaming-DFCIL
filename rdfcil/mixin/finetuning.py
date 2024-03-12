@@ -29,11 +29,15 @@ class FinetuningMixin:
     @finetuning.setter
     def finetuning(self, finetuning: bool):
         if finetuning:
+            torch.save(self.head.embeddings, './rdfcil_head.pth')
+            print("create")
             self._finetuning_state["backbone"] = freeze(self.backbone)
             self._finetuning_state["head"] = freeze(self.head)
             if self.datamodule.current_task > 0:
                 unfreeze(self.head.classifiers)
             self.head.train()
+            # save the current state of the head
+
         else:
             unfreeze(self.backbone, self._finetuning_state.pop("backbone", {}))
             unfreeze(self.head, self._finetuning_state.pop("head", {}))
