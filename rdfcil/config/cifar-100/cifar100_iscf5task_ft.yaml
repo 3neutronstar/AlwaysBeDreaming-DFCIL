@@ -1,4 +1,4 @@
-seed_everything: 1
+seed_everything: 1698126222
 trainer:
   logger: true
   checkpoint_callback: false
@@ -18,10 +18,10 @@ trainer:
   progress_bar_refresh_rate: null
   overfit_batches: 0.0
   track_grad_norm: -1
-  check_val_every_n_epoch: 30
+  check_val_every_n_epoch: 40
   fast_dev_run: false
   accumulate_grad_batches: 1
-  max_epochs: 120
+  max_epochs: 200
   min_epochs: null
   max_steps: null
   min_steps: null
@@ -61,36 +61,39 @@ trainer:
 model:
   base_lr: 0.1
   momentum: 0.9
-  weight_decay: 0.0001
+  weight_decay: 0.0005
+  fc_bias: true
   lr_factor: 0.1
   milestones:
-  - 30
-  - 60
-  finetuning_epochs: 0
+  - 80
+  - 120
+  finetuning_epochs: 40
   finetuning_lr: 0.005
   lambda_ce: 0.8
-  lambda_hkd: 0.6
-  lambda_sp: 50
-  lambda_ft: 0.2 # 1
-  lambda_weq: 0.25
-  fc_bias: true  
-  num_inv_iters: 10000
+  lambda_ft: 0.3
+  lambda_hkd: 0.4
+  lambda_mixup: 0.0
+  lambda_sp: 50.0
+  lambda_weq: 0.0
+  num_inv_iters: 5000
   inv_lr: 0.001
   inv_tau: 1000.0
   inv_alpha_pr: 0.001
   inv_alpha_rf: 50.0
   inv_resume_from: null
 data:
-  # Please replace the root with your own dataset root path
-  root: ./data
-  dataset: imagenet100
-  batch_size: 64
-  num_workers: 16
+  root: /data
+  dataset: cifar100
+  batch_size: 128
+  num_workers: 4
   val_splits: 0
   val_seed: 42
-  num_tasks: 10
+  num_tasks: 5
   current_task: 0
-  # Following is the class order used in our experiments
-  class_order: [68, 56, 78, 8, 23, 84, 90, 65, 74, 76, 40, 89, 3, 92, 55, 9, 26, 80, 43, 38, 58, 70, 77, 1, 85, 19, 17, 50, 28, 53, 13, 81, 45, 82, 6, 59, 83, 16, 15, 44, 91, 41, 72, 60, 79, 52, 20, 10, 31, 54, 37, 95, 14, 71, 96, 98, 97, 2, 64, 66, 42, 22, 35, 86, 24, 34, 87, 21, 99, 0, 88, 27, 18, 94, 11, 12, 47, 25, 30, 46, 62, 69, 36, 61, 7, 63, 75, 5, 32, 4, 51, 48, 73, 93, 39, 67, 29, 49, 57, 33]
+  class_order: [23, 8, 11, 7, 48, 13, 1, 91, 94, 54, 16, 63, 52, 41, 80, 2, 47, 87, 78, 66, 19, 6, 24, 10, 59, 30, 22, 29, 83, 37, 93, 81, 43, 99, 86, 28, 34, 88, 44, 14, 84, 70, 4, 20, 15, 21, 31, 76, 57, 67, 73, 50, 69, 25, 98, 46, 96, 0, 72, 35, 58, 92, 3, 95, 56, 90, 26, 40, 55, 89, 75, 71, 60, 42, 9, 82, 39, 18, 77, 68, 32, 79, 12, 85, 36, 17, 64, 27, 74, 45, 61, 38, 51, 62, 65, 33, 5, 53, 97, 49]
   init_task_splits: 0
+  task_seed: 42
   test_mode: seen
+  memory_algo: herding
+  memory_size: 0
+  dynamic_memory: false

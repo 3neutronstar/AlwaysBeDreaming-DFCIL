@@ -6,7 +6,7 @@
 
 # process inputs
 DEFAULTGPU=0
-GPUID=${2:-$DEFAULTDR}
+GPUID=6 # ${2:-$DEFAULTDR}
 DATAROOT="/data"
 
 # benchmark settings

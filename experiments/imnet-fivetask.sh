@@ -2,14 +2,14 @@
 
 # process inputs
 DEFAULTGPU=0
-GPUID=${1:-$DEFAULTGPU}
-DEFAULTDR="datasets"
-DATAROOT=${2:-$DEFAULTDR}
+GPUID=6
+# DEFAULTDR="datasets"
+DATAROOT='/data'
 
 # benchmark settings
 DATE=ICCV2021
 SPLIT=10
-OUTDIR=outputs/${DATE}/DFCIL-fivetask/ImageNet-50
+OUTDIR=outputs/${DATE}/DFCIL-fivetask/ImageNet-100
 
 ###############################################################
 

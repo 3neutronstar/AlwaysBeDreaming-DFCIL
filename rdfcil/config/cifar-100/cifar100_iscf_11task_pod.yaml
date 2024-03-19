@@ -68,11 +68,11 @@ model:
   - 120
   finetuning_epochs: 0
   finetuning_lr: 0.005
-  lambda_ce: 0.4
+  lambda_ce: 0.7
   lambda_hkd: 0.3
-  lambda_sp: 12.5
-  lambda_ft: 0.2 # 1
-  lambda_weq: 0.05
+  lambda_sp: 5
+  lambda_ft: 0.1 # 1
+  lambda_weq: 0.1
   num_inv_iters: 5000
   inv_lr: 0.001
   inv_tau: 1000.0

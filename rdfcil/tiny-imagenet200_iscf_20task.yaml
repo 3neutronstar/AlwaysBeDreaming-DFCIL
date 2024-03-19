@@ -72,8 +72,8 @@ model:
   lambda_hkd: 0.4
   hkd_add: false
   lambda_sp: 5
-  lambda_ft: 0.15
-  lambda_weq: 0.1
+  lambda_ft: 0.2
+  lambda_weq: 0.3
   fc_bias: true  
   num_inv_iters: 5000
   inv_lr: 0.001

@@ -66,14 +66,12 @@ model:
   milestones:
   - 30
   - 60
-  finetuning_epochs: 0
+  finetuning_epochs: 30
   finetuning_lr: 0.005
-  lambda_ce: 0.8
-  lambda_hkd: 0.6
-  lambda_sp: 50
-  lambda_ft: 0.2 # 1
-  lambda_weq: 0.25
-  fc_bias: true  
+  lambda_ce: 0.5
+  lambda_hkd: 0.15
+  lambda_ft: 1.0
+  lambda_rkd: 0.5
   num_inv_iters: 10000
   inv_lr: 0.001
   inv_tau: 1000.0
@@ -85,10 +83,10 @@ data:
   root: ./data
   dataset: imagenet100
   batch_size: 64
-  num_workers: 16
+  num_workers: 8
   val_splits: 0
   val_seed: 42
-  num_tasks: 10
+  num_tasks: 5
   current_task: 0
   # Following is the class order used in our experiments
   class_order: [68, 56, 78, 8, 23, 84, 90, 65, 74, 76, 40, 89, 3, 92, 55, 9, 26, 80, 43, 38, 58, 70, 77, 1, 85, 19, 17, 50, 28, 53, 13, 81, 45, 82, 6, 59, 83, 16, 15, 44, 91, 41, 72, 60, 79, 52, 20, 10, 31, 54, 37, 95, 14, 71, 96, 98, 97, 2, 64, 66, 42, 22, 35, 86, 24, 34, 87, 21, 99, 0, 88, 27, 18, 94, 11, 12, 47, 25, 30, 46, 62, 69, 36, 61, 7, 63, 75, 5, 32, 4, 51, 48, 73, 93, 39, 67, 29, 49, 57, 33]
