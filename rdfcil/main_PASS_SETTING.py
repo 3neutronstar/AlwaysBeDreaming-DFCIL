@@ -2,25 +2,23 @@
 
 from cl_lite.core import App
 
-from datamodule import DataModule
-from module import Module
+from datamodule import DataModule, PASS_DataModule
+# from module import Module
 # from iscf_module_ijcv import ISCFModule
-from iscf_module import ISCFModule
+from iscf_module_PASS_SETTING import ISCFModule
 # from iscf_module_eccv_supplementary2 import ISCFModule
 # from iscf_module_eccv_supplementary import ISCFModule
 # from iscf_module_ft_balanced import ISCFModuleFTB
 # from iscf_module_ft import ISCFModuleFT
-from iscf_module_wa import ISCFModuleWA
-from iscf_module_mn import ISCFModuleMN
+# from iscf_module_wa import ISCFModuleWA
 
 
 app = App(
     # ISCFModuleFTB,
     # ISCFModuleWA,
-    # ISCFModuleMN,
     ISCFModule,
     # Module,
-    DataModule,
+    PASS_DataModule,
     gpus=-1,
     benchmark=True,
     num_sanity_val_steps=0,

@@ -1,4 +1,4 @@
-seed_everything: 1698126972
+seed_everything: 1
 trainer:
   logger: true
   checkpoint_callback: false
@@ -18,10 +18,10 @@ trainer:
   progress_bar_refresh_rate: null
   overfit_batches: 0.0
   track_grad_norm: -1
-  check_val_every_n_epoch: 1
+  check_val_every_n_epoch: 30
   fast_dev_run: false
   accumulate_grad_batches: 1
-  max_epochs: 10
+  max_epochs: 120
   min_epochs: null
   max_steps: null
   min_steps: null
@@ -61,36 +61,36 @@ trainer:
 model:
   base_lr: 0.1
   momentum: 0.9
-  weight_decay: 0.0005
+  weight_decay: 0.0001
   lr_factor: 0.1
   milestones:
-  - 4
-  - 8
+  - 30
+  - 60
   finetuning_epochs: 0
   finetuning_lr: 0.005
-  lambda_ce: 0.5
-  lambda_hkd: 0.15
-  lambda_sp: 0.5
-  num_inv_iters: 10
+  lambda_ce: 0.8
+  lambda_lkd: 0.5
+  lambda_sp: 50
+  lambda_gce: 0.2 # 1
+  lambda_weq: 0.75
+  fc_bias: true  
+  num_inv_iters: 10000
   inv_lr: 0.001
   inv_tau: 1000.0
   inv_alpha_pr: 0.001
   inv_alpha_rf: 50.0
   inv_resume_from: null
-  fc_bias: True
 data:
-  root: /data
-  dataset: cifar100
-  batch_size: 128
-  num_workers: 4
+  # Please replace the root with your own dataset root path
+  root: ./data
+  dataset: imagenet1000
+  batch_size: 64
+  num_workers: 16
   val_splits: 0
   val_seed: 42
-  num_tasks: 20
+  num_tasks: 5
   current_task: 0
+  # Following is the class order used in our experiments
   class_order: []
   init_task_splits: 0
-  task_seed: 42
   test_mode: seen
-  memory_algo: herding
-  memory_size: 0
-  dynamic_memory: false
