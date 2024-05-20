@@ -27,8 +27,6 @@ import torch.nn.functional as F
 from cl_lite.backbone.resnet_cifar import CifarResNet
 from cl_lite.backbone.resnet import ResNet
 
-from datamodule import DataModule
-
 class ISCF_ResNet(CifarResNet):
     def __init__(self, n=5, nf=16, channels=3, preact=False, zero_residual=True, pooling_config=..., downsampling="stride", final_layer=False, all_attentions=False, last_relu=False, **kwargs):
         super().__init__(n, nf, channels, preact, zero_residual, pooling_config, downsampling, final_layer, all_attentions, last_relu, **kwargs)        
@@ -165,17 +163,21 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
         model_old = [("backbone", self.backbone),("head", self.head)]
         self.model_old = deepcopy(nn.Sequential(OrderedDict(model_old))).eval()
         freeze(self.model_old)
+        # print(self.datamodule.memory.container)
+        mem = self.datamodule.update_memory(self.model_old)#, num_old_classes=n_cur-n_old) # MS
+        self.datamodule.memory_set(mem)
 
-        self.inversion = GenerativeInversion(
-            model=deepcopy(self.model_old),
-            dataset=self.datamodule.dataset,
-            batch_size=self.datamodule.batch_size,
-            max_iters=self.hparams.num_inv_iters,
-            lr=self.hparams.inv_lr,
-            tau=self.hparams.inv_tau,
-            alpha_pr=self.hparams.inv_alpha_pr,
-            alpha_rf=self.hparams.inv_alpha_rf,
-        )
+        # self.inversion = GenerativeInversion(
+        #     model=deepcopy(self.model_old),
+        #     dataset=self.datamodule.dataset,
+        #     batch_size=self.datamodule.batch_size,
+        #     max_iters=self.hparams.num_inv_iters,
+        #     lr=self.hparams.inv_lr,
+        #     tau=self.hparams.inv_tau,
+        #     alpha_pr=self.hparams.inv_alpha_pr,
+        #     alpha_rf=self.hparams.inv_alpha_rf,
+        # )
+
         self.model_old=deepcopy(self.backbone).eval()
         self.model_old.head=deepcopy(self.head).eval()
         freeze(self.model_old)
@@ -183,8 +185,8 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
         self.sp = SP(reduction='mean')
 
     def init_setup(self, stage=None):
-        from cl_lite.backbone.resnet import BasicBlock
         if self.datamodule.dataset.startswith("imagenet"):
+            from cl_lite.backbone.resnet import BasicBlock
             self.backbone = ISCF_ResNet18(BasicBlock, [2, 2, 2, 2])
         else:
             self.backbone = ISCF_ResNet()
@@ -204,14 +206,17 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
         if current_task == 0 or resume_from_checkpoint is not None:
             self.init_setup(stage)
             self.print(f"=> Network Overview \n {self}")
+            # self.datamodule.setup_memory()
         else:
             self.update_old_model()
             self.head.append(self.datamodule.num_classes)
 
-        self.cls_count = torch.zeros(self.head.num_classes)
-        self.cls_weight = torch.ones(self.head.num_classes)
         self.register_losses()
-
+    
+    def before_train(self):
+        super().before_train()
+        # if self.datamodule.current_task > 0:
+            
 
     def forward(self, input):
         output = self.backbone(input)
@@ -220,19 +225,19 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
 
     def on_train_start(self):
         super().on_train_start()
-        if self.model_old is not None:
-            ckpt_path = self.hparams.inv_resume_from
-            if ckpt_path is None:
-                self.inversion()
-                log_dir = self.trainer.logger.log_dir
-                ckpt_path = os.path.join(log_dir, "inversion.ckpt")
-                print("\n==> Saving inversion states to", ckpt_path)
-                torch.save(self.inversion.state_dict(), ckpt_path)
-            else:
-                print("\n==> Restoring inversion states from", ckpt_path)
-                state = torch.load(ckpt_path, map_location=self.device)
-                self.inversion.load_state_dict(state)
-                self.hparams.inv_resume_from = None
+        # if self.model_old is not None:
+        #     ckpt_path = self.hparams.inv_resume_from
+        #     if ckpt_path is None:
+        #         self.inversion()
+        #         log_dir = self.trainer.logger.log_dir
+        #         ckpt_path = os.path.join(log_dir, "inversion.ckpt")
+        #         print("\n==> Saving inversion states to", ckpt_path)
+        #         torch.save(self.inversion.state_dict(), ckpt_path)
+        #     else:
+        #         print("\n==> Restoring inversion states from", ckpt_path)
+        #         state = torch.load(ckpt_path, map_location=self.device)
+        #         self.inversion.load_state_dict(state)
+        #         self.hparams.inv_resume_from = None
 
     def training_step(self, batch, batch_idx):
         loss_mixup_ce=None
@@ -247,17 +252,17 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
         n_cur = self.head.num_classes
         if self.model_old is not None:
             _ = self.model_old.eval() if self.model_old.training else None
-            _ = self.inversion.eval() if self.inversion.training else None
+            # _ = self.inversion.eval() if self.inversion.training else None
             n_old = self.model_old.head.num_classes
 
-            input_rh, target_rh = self.inversion.sample(input.shape[0])
-            target_all = torch.cat([target_t, target_rh])
+            # input_rh, target_rh = self.inversion.sample(input.shape[0])
+            # target_all = torch.cat([target_t, target_rh])
 
-            input_int=torch.cat([input, input_rh])
+            # input_int=torch.cat([input, input_rh])
             # middle
             with torch.no_grad():
-                old_z,old_middles = self.model_old.forward_feat(input_int)
-            z,middles = self.backbone.forward_feat(input_int)
+                old_z,old_middles = self.model_old.forward_feat(input)
+            z,middles = self.backbone.forward_feat(input)
             outputs=self.head(z)
                    
 
@@ -275,7 +280,11 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
             dw_cls = mappings
 
             kwargs["target"] = kwargs["target"] - n_old
-            kwargs["prediction"] = kwargs["prediction"][:int(outputs.shape[0]//2), n_old:]
+            # mask for cur data
+            mask = (kwargs["target"] >= n_old).view(-1, 1).expand(-1, n_cur).float()
+            kwargs["target"] = kwargs["target"]  * (kwargs["target"] >= n_old).view(-1)
+
+            kwargs["prediction"] = (kwargs["prediction"]*mask)[:, n_old:]
             kwargs["lcl_weight"]=dw_cls[n_old:]
 
             # gce (ft classification)
@@ -332,15 +341,12 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
             loss+=(loss_weq+loss_sp+loss_kd)
 
         self.log_dict(loss_dict)
-        indices, counts = target_all.cpu().unique(return_counts=True)
-        self.cls_count[indices] += counts
+        # indices, counts = target_all.cpu().unique(return_counts=True)
+        # self.cls_count[indices] += counts
 
         return loss
 
     def training_epoch_end(self, *args, **kwargs):
-        if self.model_old is not None:
-            cls_weight = self.cls_count.sum() / self.cls_count.clamp(min=1)
-            self.cls_weight = cls_weight.div(cls_weight.min())
         return super().training_epoch_end(*args, **kwargs)
 
     def configure_optimizers(self):

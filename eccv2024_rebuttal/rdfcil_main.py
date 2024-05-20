@@ -3,15 +3,16 @@
 from cl_lite.core import App
 
 from datamodule import DataModule
-# from iscf_module_ft import ISCFModuleFT
 # from iscf_module_wa import ISCFModule
-from iscf_module import ISCFModule
-# from iscf_module_mn import ISCFModuleMN
+# from iscf_module import ISCFModule
+# from rdfcil_module_mn import Module
+from rdfcil_module_weq import Module
+# from rdfcil_module_wa import Module
+# from rdfcil_module import Module
 
 
 app = App(
-    # ISCFModuleMN,
-    ISCFModule,
+    Module,
     DataModule,
     gpus=-1,
     benchmark=True,

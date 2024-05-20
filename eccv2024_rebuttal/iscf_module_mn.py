@@ -15,7 +15,7 @@ import cl_lite.core as cl
 from cl_lite.deep_inversion import GenerativeInversion
 from cl_lite.head import DynamicSimpleHead
 from cl_lite.mixin import FeatureHookMixin
-from cl_lite.nn import freeze
+from cl_lite.nn import freeze, RKDAngleLoss
 
 from datamodule import DataModule
 from mixin import FinetuningMixin
@@ -27,7 +27,12 @@ import torch.nn.functional as F
 from cl_lite.backbone.resnet_cifar import CifarResNet
 from cl_lite.backbone.resnet import ResNet
 
-from datamodule import DataModule
+from scipy.optimize import linear_sum_assignment
+
+def cosine_similarity(a, b):
+    dot = a.matmul(b.t())
+    norm =a.norm(dim=1,keepdim=True).matmul(b.norm(dim=1,keepdim=True).t())
+    return dot / norm
 
 class ISCF_ResNet(CifarResNet):
     def __init__(self, n=5, nf=16, channels=3, preact=False, zero_residual=True, pooling_config=..., downsampling="stride", final_layer=False, all_attentions=False, last_relu=False, **kwargs):
@@ -86,7 +91,20 @@ class SP(nn.Module):
         loss = F.mse_loss(norm_G_s,norm_G_t,reduction=self.reduction)
         return loss
 
-class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
+def weight_align(fc, increment):
+    weights = fc
+    newnorm = torch.norm(weights[-increment:, :], p=2, dim=1)
+    oldnorm = torch.norm(weights[:-increment, :], p=2, dim=1)
+    meannew = torch.mean(newnorm)
+    meanold = torch.mean(oldnorm)
+    gamma = (meanold+1e-12) / (meannew + 1e-12)
+    print("alignweights,gamma=", gamma, "meanold=", meanold, "meannew=", meannew)
+    fc[-increment:, :] *= gamma
+
+    return fc
+
+
+class ISCFModuleMN(FeatureHookMixin, FinetuningMixin, cl.Module):
     datamodule: DataModule
     evaluator_cls = cl.ILEvaluator
 
@@ -101,6 +119,7 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
         finetuning_lr: float = 0.005,
         lambda_ce: float = 0.5,
         lambda_lkd: float = 0.15,
+        hkd_add: bool = False,
         lambda_sp: float = 0.5,
         lambda_gce: float = 1.0,
         lambda_weq: float = 1.0,
@@ -111,6 +130,8 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
         inv_alpha_rf: float = 50.0,
         inv_resume_from: str = None,
         fc_bias: bool = False,
+        lambda_mixup:float=0.0,
+        mixup_alpha:float=0.0,
     ):
         """Module of joint project
 
@@ -136,6 +157,12 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
         super().__init__()
         self.save_hyperparameters()
 
+    def max_norm_(self, w, max_norm_val = 1):
+        with torch.no_grad():
+            norm = w.norm(2, dim=0, keepdim=True)
+            desired = torch.clamp(norm, 0, max_norm_val)
+            w *= ((desired+1e-12) / (1e-12 + norm))
+
     def register_losses(self):
         self.register_loss(
             "ce",
@@ -146,17 +173,27 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
         if self.model_old is None:
             return
 
+        self.alpha = log(self.datamodule.num_classes / 2 + 1, 2)
+        self.beta2 = self.model_old.head.num_classes / self.datamodule.num_classes
+        self.beta = sqrt(self.beta2)
 
         self.set_loss_factor(
-            "ce", self.hparams.lambda_ce
+            "ce", self.hparams.lambda_ce # * (1 + 1 / self.alpha) / self.beta
         )
 
         self.register_loss(
-            "gce",
+            "ft",
             nn.functional.cross_entropy,
-            ["gce_prediction", "gce_target","gce_weight"],
+            ["ft_prediction", "ft_target","ft_weight"],
             self.hparams.lambda_gce
+            # self.model_old.head.num_classes / self.head.num_classes, #TODO del this
         )
+        # self.register_loss(
+        #     "hkd",
+        #     nn.MSELoss(),
+        #     ["input_hkd", "target_hkd"],
+        #     self.hparams.lambda_lkd / (self.head.num_classes-self.model_old.head.num_classes),
+        # )
 
 
     def update_old_model(self):
@@ -182,10 +219,13 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
 
         self.sp = SP(reduction='mean')
 
+        #self.register_feature_hook("pen", "head.neck")
+
     def init_setup(self, stage=None):
-        from cl_lite.backbone.resnet import BasicBlock
         if self.datamodule.dataset.startswith("imagenet"):
+            from cl_lite.backbone.resnet import BasicBlock
             self.backbone = ISCF_ResNet18(BasicBlock, [2, 2, 2, 2])
+            # self.backbone = B.resnet.resnet18()
         else:
             self.backbone = ISCF_ResNet()
         kwargs = dict(num_features=self.backbone.num_features, bias=self.hparams.fc_bias)
@@ -241,6 +281,8 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
             zeros = torch.zeros_like(input, requires_grad=True)
             return zeros.sum()
 
+        self.max_norm_(self.head.embeddings, max_norm_val=1)
+        
         target_t = self.datamodule.transform_target(target)
         target_all = target_t
 
@@ -267,6 +309,7 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
                 prediction=outputs,
             )
 
+
             # local classification
             mappings = torch.ones((n_cur), dtype=torch.float32,device=self.device)
             rnt = 1.0 * n_old / n_cur
@@ -278,14 +321,24 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
             kwargs["prediction"] = kwargs["prediction"][:int(outputs.shape[0]//2), n_old:]
             kwargs["lcl_weight"]=dw_cls[n_old:]
 
-            # gce (ft classification)
-            outputs_gce=self.head(z.detach().clone()) # only cls head
-            kwargs["gce_weight"] = dw_cls
-            kwargs["gce_prediction"] = outputs_gce
-            kwargs["gce_target"]=target_all
+            # ft classification
+            outputs_ft=self.head(z.detach().clone()) # only cls head
+            kwargs["ft_weight"] = dw_cls
+            kwargs["ft_prediction"] = outputs_ft
+            kwargs["ft_target"]=target_all
 
-            # lkd
-            loss_kd=(F.mse_loss(outputs[:,:n_old],self.model_old.head(old_z).detach(),reduction='none').sum(dim=1))*self.hparams.lambda_lkd / (n_cur-n_old)
+            # hkd
+            if self.hparams.hkd_add:
+                # hkd_old_outputs=self.model_old.head(old_z[int(outputs.shape[0]//2):,:]).detach()
+                # hkd_old_outputs_add=hkd_old_outputs.min(dim=1).values.view(-1,1).expand(hkd_old_outputs.shape[0],n_cur-n_old).detach()
+                # hkd_old_outputs=torch.cat([hkd_old_outputs,hkd_old_outputs_add],dim=1)
+                # hkd_new_outputs=outputs[int(outputs.shape[0]//2):,:]
+                # loss_kd=(F.mse_loss(hkd_new_outputs,hkd_old_outputs,reduction='none').sum(dim=1))*self.hparams.lambda_lkd / (n_cur-n_old)
+
+                # loss_kd+=(F.mse_loss(outputs[:int(outputs.shape[0]//2),:n_old],self.model_old.head(old_z[:int(outputs.shape[0]//2),:]).detach(),reduction='none').sum(dim=1))*self.hparams.lambda_lkd / (n_cur-n_old) /2
+                loss_kd=(F.mse_loss(outputs[:,:n_old],self.model_old.head(old_z).detach(),reduction='none').mean(dim=1))*self.hparams.lambda_lkd
+            else:
+                loss_kd=(F.mse_loss(outputs[:,:n_old],self.model_old.head(old_z).detach(),reduction='none').sum(dim=1))*self.hparams.lambda_lkd / (n_cur-n_old)
             loss_kd=loss_kd.mean()
             # weq
             w = self.head.embeddings
@@ -296,16 +349,50 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
                 b = torch.cat(b)
                 w = torch.cat([w,b.view(-1,1)],dim=1)
 
-            last_params = w.detach()
-            cur_params = w
-            
-            loss_weq=F.mse_loss(last_params.norm(dim=1,keepdim=True).mean().view(-1).expand(n_cur),cur_params.norm(dim=1)) *self.hparams.lambda_weq
+            loss_weq=0
 
-            # spkd
-            loss_sp=0
-            for i in range(len(middles)):
-                loss_sp+=self.sp(middles[i],old_middles[i])
-            loss_sp=loss_sp.sum()/len(middles)*self.hparams.lambda_sp
+            # mixup (feature level)
+            if self.hparams.lambda_mixup>0:
+                # sp
+                loss_sp=0
+                for i in range(len(middles)):
+                    if i == len(middles)-1:
+                        latent_vector = F.adaptive_avg_pool2d(middles[i], (1, 1)).view(middles[i].shape[0], -1)
+                        latent=latent_vector[:int(latent_vector.shape[0]//2),:] # latent from new data
+                        old_latent=latent_vector[int(latent_vector.shape[0]//2):,:] # latent from old data
+                    loss_sp+=self.sp(middles[i],old_middles[i])
+                loss_sp=loss_sp.sum()/len(middles)*self.hparams.lambda_sp
+                # mixup
+                lam = np.random.beta(self.hparams.mixup_alpha, self.hparams.mixup_alpha)
+                
+                old_index=torch.randperm(int(input_int.shape[0]//2)).to(self.device)
+                latent_mixup=old_latent*lam+old_latent[old_index]*(1-lam) # mixup with latent from old data
+
+                B = input.shape[0] # new data size
+                HB = input_int.shape[0] # all data size
+                similarity = cosine_similarity(latent.view(B,-1),old_latent.view(B,-1))
+                row, col = linear_sum_assignment(similarity.detach().cpu().numpy())
+                matching_mixup = latent[row]*lam+old_latent[col]*(1-lam) # mixup with latent from new data
+
+                cat_latent=torch.cat([matching_mixup,latent_mixup],dim=0).view(2*B,-1,1,1) # cat 순서 유의
+                target_onehot=F.one_hot(target_all,n_cur).float()
+                old_target_onehot=target_onehot[int(target_onehot.shape[0]//2):,:]
+
+                latent_mixup_onehot=old_target_onehot*lam+old_target_onehot[old_index]*(1-lam) # mixup with latent from old data
+
+                matching_target_onehot= target_onehot[:int(target_onehot.shape[0]//2),:][row]*lam+old_target_onehot[col]*(1-lam) # mixup with latent from new data
+
+                cat_onehot=torch.cat([matching_target_onehot,latent_mixup_onehot],dim=0) # cat 순서 유의
+                
+                # mixup loss (onehot ce)
+                loss_mixup_ce=-(cat_onehot*torch.log_softmax(self.head(cat_latent.detach().clone()),dim=1)).sum(dim=1).mean()
+                                
+            else: # without mixup
+                # sp
+                loss_sp=0
+                for i in range(len(middles)):
+                    loss_sp+=self.sp(middles[i],old_middles[i])
+                loss_sp=loss_sp.sum()/len(middles)*self.hparams.lambda_sp # * self.alpha * self.beta
                 
         else: # task 0
             mappings = torch.ones((n_cur), dtype=torch.float32,device=self.device)
@@ -315,7 +402,10 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
                 target=target_t,
                 prediction=self(input),
                 lcl_weight=dw_cls
+                # lcl_weight=self.cls_weight[:self.head.num_classes].detach().to(self.device),
             )
+
+
 
         loss, loss_dict = self.compute_loss(**kwargs)
         loss_dict={f"loss/{key}": val for key, val in loss_dict.items()}
@@ -335,13 +425,51 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
         indices, counts = target_all.cpu().unique(return_counts=True)
         self.cls_count[indices] += counts
 
+
         return loss
 
     def training_epoch_end(self, *args, **kwargs):
         if self.model_old is not None:
             cls_weight = self.cls_count.sum() / self.cls_count.clamp(min=1)
             self.cls_weight = cls_weight.div(cls_weight.min())
+        # self.check_finetuning()
         return super().training_epoch_end(*args, **kwargs)
+    
+    # def on_validation_epoch_end(self):
+    #     if self.model_old is not None:
+    #         step_class = self.head.num_classes - self.model_old.head.num_classes
+    #         self.head.embeddings.data = self.w
+    #         if self.hparams.fc_bias:
+    #             for i in range(len(self.head.classifiers)):
+    #                 self.head.classifiers[i].bias.data = self.b.view(-1)[i*step_class:(i+1)*step_class]
+    #     return super().on_validation_epoch_end()
+    
+    # def on_validation_epoch_start(self) -> None:
+    #     # print("TEST")
+    #     w = self.head.embeddings.detach().clone()
+    #     if self.hparams.fc_bias:
+    #         b=[]
+    #         for i in range(len(self.head.classifiers)):
+    #             b.append(self.head.classifiers[i].bias)
+    #         b = torch.cat(b)
+    #         w = torch.cat([w,b.view(-1,1)],dim=1)
+    #         self.b=b
+    #     else:
+    #         self.b=None
+    #     self.w=w
+        
+    #     # WA
+    #     if self.model_old is not None:
+    #         step_class = self.head.num_classes - self.model_old.head.num_classes
+    #         cur_params = w
+    #         increment = self.head.num_classes - self.model_old.head.num_classes
+    #         cur_params = weight_align(cur_params, increment)
+    #         self.head.embeddings.data = cur_params[:, :-1]
+    #         if self.hparams.fc_bias:
+    #             for i in range(len(self.head.classifiers)):
+    #                 self.head.classifiers[i].bias.data = cur_params[:, -1][i*step_class:(i+1)*step_class]
+    #     return super().on_validation_epoch_start()
+
 
     def configure_optimizers(self):
         module = nn.ModuleList([self.backbone, self.head, self.rkd])

@@ -9,19 +9,12 @@ class DataModule(cl.SplitedDataModule):
     finetuning: bool = False
 
     @property
-    def transform(self):
-        if self.dataset.startswith('imagenet'):
-            transform=[
-            T.RandomResizedCrop(self.dims[-2:]),
+    def train_transforms(self):
+        return [
+            T.RandomCrop(self.dims[-2:], padding=4),
             T.RandomHorizontalFlip(),
-            T.ToTensor(),
-            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ]
-            print("Setting for ImageNet")
-        else:
-            return super().transform()
+        ]
 
-        return T.Compose(transform)
 
 
     # @property

@@ -375,15 +375,17 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
     def on_validation_epoch_end(self):
         if self.model_old is not None:
             step_class = self.head.num_classes - self.model_old.head.num_classes
-            self.head.embeddings.data = self.w
-            if self.hparams.fc_bias:
-                for i in range(len(self.head.classifiers)):
+            # self.head.embeddings.data = self.w
+            for i in range(len(self.head.classifiers)):
+                self.head.classifiers[i].weight.data = self.w[i*step_class:(i+1)*step_class,:]
+                if self.hparams.fc_bias:
                     self.head.classifiers[i].bias.data = self.b.view(-1)[i*step_class:(i+1)*step_class]
         return super().on_validation_epoch_end()
     
     def on_validation_epoch_start(self) -> None:
         # print("TEST")
         w = self.head.embeddings.detach().clone()
+        self.w=w
         if self.hparams.fc_bias:
             b=[]
             for i in range(len(self.head.classifiers)):
@@ -393,7 +395,6 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
             self.b=b
         else:
             self.b=None
-        self.w=w
         
         # WA
         if self.model_old is not None:
@@ -401,8 +402,9 @@ class ISCFModule(FeatureHookMixin, FinetuningMixin, cl.Module):
             cur_params = w
             increment = self.head.num_classes - self.model_old.head.num_classes
             cur_params = weight_align(cur_params, increment)
-            self.head.embeddings.data = cur_params[:, :-1]
-            if self.hparams.fc_bias:
-                for i in range(len(self.head.classifiers)):
+            # self.head.embeddings.data = cur_params[:, :-1]
+            for i in range(len(self.head.classifiers)):
+                self.head.classifiers[i].weight.data = cur_params[:, :-1][i*step_class:(i+1)*step_class, :]
+                if self.hparams.fc_bias:
                     self.head.classifiers[i].bias.data = cur_params[:, -1][i*step_class:(i+1)*step_class]
         return super().on_validation_epoch_start()
